@@ -1,0 +1,16 @@
+{
+  "randomSeed": 42,
+  "kMeansNrOfClusters": 16,
+  "kMeansMinDeltaDifference": 1,
+  "kMeansClusteringColorSpace": 2,
+  "kMeansColorRestrictions": [],
+  "colorAliases": {},
+  "narrowPixelStripCleanupRuns": 3,
+  "removeFacetsSmallerThanNrOfPoints": 20,
+  "removeFacetsFromLargeToSmall": true,
+  "maximumNumberOfFacets": 500,
+  "nrOfTimesToHalveBorderSegments": 2,
+  "resizeImageIfTooLarge": true,
+  "resizeImageWidth": 800,
+  "resizeImageHeight": 800
+}
