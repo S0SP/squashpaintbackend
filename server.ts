@@ -100,7 +100,13 @@ async function handleGenerateCore(imageBuffer: Buffer, reqBody: any, res: expres
         // ── Parse settings ──────────────────────────────────────────────────────
         let settings: GenerateSettings = new Settings() as GenerateSettings;
         if (reqBody?.settings) {
-            try { settings = Object.assign(settings, JSON.parse(reqBody.settings)); }
+            try { 
+                if (typeof reqBody.settings === 'string') {
+                    settings = Object.assign(settings, JSON.parse(reqBody.settings));
+                } else {
+                    settings = Object.assign(settings, reqBody.settings);
+                }
+            }
             catch { res.status(400).json({ error: "Invalid JSON in 'settings' field." }); return; }
         }
         // Allow form fields for num_colors / min_region_area (matches api.ts formData.append)
