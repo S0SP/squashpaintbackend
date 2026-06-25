@@ -28,6 +28,10 @@ import multer from "multer";
 import zlib from "zlib";
 import compression from "compression";
 import { createCanvas, loadImage, Path2D } from "@napi-rs/canvas";
+import OpenAI from "openai";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 import { ColorReducer } from "./src/colorreductionmanagement";
 import { FacetBorderSegmenter } from "./src/facetBorderSegmenter";
@@ -80,30 +84,37 @@ app.get("/api/health", healthHandler);
 const generateHandler = upload.single("image");
 
 async function handleGenerate(req: express.Request, res: express.Response): Promise<void> {
+    if (!req.file) {
+        res.status(400).json({ error: "No image uploaded. Use field name 'image'." });
+        return;
+    }
+    await handleGenerateCore(req.file.buffer, req.body, res);
+}
+
+async function handleGenerateCore(imageBuffer: Buffer, reqBody: any, res: express.Response): Promise<void> {
     const reqStart = Date.now();
     try {
-        if (!req.file) {
-            res.status(400).json({ error: "No image uploaded. Use field name 'image'." });
-            return;
-        }
-
         // ── Parse settings ──────────────────────────────────────────────────────
         let settings: GenerateSettings = new Settings() as GenerateSettings;
-        if (req.body?.settings) {
-            try { settings = Object.assign(settings, JSON.parse(req.body.settings)); }
+        if (reqBody?.settings) {
+            try { settings = Object.assign(settings, JSON.parse(reqBody.settings)); }
             catch { res.status(400).json({ error: "Invalid JSON in 'settings' field." }); return; }
         }
         // Allow form fields for num_colors / min_region_area (matches api.ts formData.append)
-        if (req.body?.num_colors) settings.kMeansNrOfClusters = Number(req.body.num_colors);
-        if (req.body?.min_region_area) settings.removeFacetsSmallerThanNrOfPoints = Number(req.body.min_region_area);
-        // Game mode: always disable sub-layers unless explicitly requested
+        if (reqBody?.num_colors) settings.kMeansNrOfClusters = Number(reqBody.num_colors);
+        if (reqBody?.min_region_area) settings.removeFacetsSmallerThanNrOfPoints = Number(reqBody.min_region_area);
         settings.enableShadowLayer = settings.enableShadowLayer ?? false;
         settings.enableHighlightLayer = settings.enableHighlightLayer ?? false;
         settings.enableDepthLayer = settings.enableDepthLayer ?? false;
 
+        // Speed Optimizations: Downscale for vector processing and reduce cleanup iterations
+        settings.resizeImageWidth = 512;
+        settings.resizeImageHeight = 512;
+        settings.narrowPixelStripCleanupRuns = 1;
+
         // ── Load + optional resize ───────────────────────────────────────────────
         console.log("[0] Loading image …");
-        const img = await loadImage(req.file.buffer);
+        const img = await loadImage(imageBuffer);
         let c = createCanvas(img.width, img.height);
         let ctx = c.getContext("2d")!;
         ctx.drawImage(img as any, 0, 0);
@@ -295,6 +306,104 @@ async function handleGenerate(req: express.Request, res: express.Response): Prom
 // Register both route names the frontend may use
 app.post("/api/process", generateHandler, handleGenerate as any);
 app.post("/generate", generateHandler, handleGenerate as any);
+
+// ─── AI Image Generation ─────────────────────────────────────────────────────
+const STYLE_MODIFIERS: Record<string, string> = {
+  cartoon: "Aesthetic: Classic animation line-art. Use bold, thick, expressive contours, friendly features, and highly simplified, massive flat regions.",
+  realistic: "Aesthetic: Fine-line paint-by-numbers style. Use realistic proportions and anatomically accurate features, but break complex shading down into clear, distinct geometric boundary lines.",
+  pixel: "Aesthetic: 8-bit/16-bit retro pixel art template. The entire composition must be composed of clean, blocky, square-grid pixel edges and stepped staircase lines.",
+  anime: "Aesthetic: Modern Japanese animation cel-art. Use crisp, sharp contours, highly expressive large eyes, clean geometric hair clumps, and dynamic but simple shapes.",
+  watercolor: "Aesthetic: Stained-glass fluid organic art. Use flowing, elegant, curving boundary lines that mimic separate patches of watercolor wash plates."
+};
+
+app.post("/api/generate-ai", express.json({ limit: "5mb" }), async (req: express.Request, res: express.Response) => {
+    try {
+        const { prompt, style, settings } = req.body;
+        if (!prompt) {
+             res.status(400).json({ error: "Missing prompt" });
+             return;
+        }
+        
+        console.log(`[AI] Generating: ${prompt} (Style: ${style || 'none'})`);
+        const apiKey = process.env.NVIDIA_API_KEY;
+        if (!apiKey) {
+            throw new Error("Missing NVIDIA_API_KEY environment variable");
+        }
+
+        // 1. LLM Expansion
+        const styleInstruction = style && STYLE_MODIFIERS[style] ? STYLE_MODIFIERS[style] : STYLE_MODIFIERS['cartoon'];
+        const baseSystemPrompt = `You are the master prompt engineer for a premium children's color-by-number application. Your sole purpose is to take short, simple ideas from children and expand them into highly descriptive visual prompts tailored specifically for a text-to-image generation model.
+        
+You must strictly obey the following foundational layout rules:
+1. **Subject Focus:** The primary subject must be centrally framed, large, and clearly defined.
+2. **Closed Vector Regions:** Ensure all background and foreground elements form clear, distinct, closed boundaries so they can be easily mapped for coloring. No chaotic scribbles.
+3. **No Slop:** Strictly prohibit text, signatures, photorealistic rendering gradients, or overlapping structural artifacts.
+
+CRITICAL STYLE CONSTRAINT: You must strictly apply the following structural aesthetic rules:
+${styleInstruction}
+
+MANDATORY APPEND: You must append this exact string to the very end of your final response:
+"clean bold black outlines, minimalist, pure white background, no shading, strict color-by-number template style."`;
+
+        console.log("[AI] Expanding prompt via LLM...");
+        const llmResponse = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: "meta/llama-3.3-70b-instruct",
+                messages: [
+                    { role: "system", content: baseSystemPrompt },
+                    { role: "user", content: prompt }
+                ],
+                temperature: 0.1,
+                max_tokens: 180
+            })
+        });
+
+        if (!llmResponse.ok) {
+            const errText = await llmResponse.text();
+            throw new Error(`NVIDIA LLM API Error: ${llmResponse.status} ${errText}`);
+        }
+
+        const llmData = await llmResponse.json();
+        const expandedPrompt = llmData.choices[0].message.content;
+        console.log(`[AI] Expanded Prompt: ${expandedPrompt}`);
+
+        // 2. Flux Image Generation
+        console.log("[AI] Generating image via FLUX...");
+        const nvidiaRes = await fetch('https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+                prompt: expandedPrompt,
+            })
+        });
+
+        if (!nvidiaRes.ok) {
+            const errText = await nvidiaRes.text();
+            throw new Error(`NVIDIA FLUX API Error: ${nvidiaRes.status} ${errText}`);
+        }
+
+        const data = await nvidiaRes.json();
+        const b64 = data.artifacts?.[0]?.base64;
+        if (!b64) throw new Error("No image data returned from NVIDIA API");
+
+        console.log("[AI] Starting existing image-to-color-by-number algorithm...");
+        const buffer = Buffer.from(b64, "base64");
+        await handleGenerateCore(buffer, { settings, ...req.body }, res);
+
+    } catch(err: any) {
+        console.error("[AI Error]", err);
+        res.status(500).json({ error: err?.message || "AI generation failed" });
+    }
+});
 
 // ─── Region Map Builder ───────────────────────────────────────────────────────
 // Rasterises every facet onto a canvas at original-image resolution.
@@ -514,14 +623,18 @@ function buildPaletteInfo(
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 3000;
-const HOST = "0.0.0.0"; // Explicitly bind to all interfaces for production (Railway)
+if (process.env.VERCEL) {
+    module.exports = app;
+} else {
+    const PORT = process.env.PORT || 3000;
+    const HOST = "0.0.0.0"; // Explicitly bind to all interfaces for production (Railway)
 
-app.listen(PORT as number, HOST, () => {
-    console.log(`PBN ColorArt backend  →  http://${HOST}:${PORT}`);
-    console.log(`Routes: POST /api/process   POST /generate`);
-    console.log(`Health: GET  /api/health    GET  /health`);
-});
+    app.listen(PORT as number, HOST, () => {
+        console.log(`PBN ColorArt backend  →  http://${HOST}:${PORT}`);
+        console.log(`Routes: POST /api/process   POST /generate`);
+        console.log(`Health: GET  /api/health    GET  /health`);
+    });
+}
 
 // Top-level unhandled exception/rejection handlers for production stability
 process.on("unhandledRejection", (reason, promise) => {

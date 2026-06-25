@@ -13,9 +13,12 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.53",
+    "@supabase/supabase-js": "^2.108.2",
     "compression": "^1.8.1",
+    "dotenv": "^17.4.2",
     "express": "^4.18.2",
-    "multer": "^2.0.0"
+    "multer": "^2.0.0",
+    "openai": "^6.45.0"
   },
   "devDependencies": {
     "@types/compression": "^1.8.1",
