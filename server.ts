@@ -76,6 +76,9 @@ app.options("*", (_req: express.Request, res: express.Response) => res.sendStatu
 const healthHandler = (_req: express.Request, res: express.Response) => {
     res.json({ status: "ok", version: "3.0.0-colorart" });
 };
+app.get("/", (_req: express.Request, res: express.Response) => {
+    res.send("ColorArt Backend is running! 🎨");
+});
 app.get("/health", healthHandler);
 app.get("/api/health", healthHandler);
 
@@ -309,21 +312,21 @@ app.post("/generate", generateHandler, handleGenerate as any);
 
 // ─── AI Image Generation ─────────────────────────────────────────────────────
 const STYLE_MODIFIERS: Record<string, string> = {
-  cartoon: "Aesthetic: Classic animation line-art. Use bold, thick, expressive contours, friendly features, and highly simplified, massive flat regions.",
-  realistic: "Aesthetic: Fine-line paint-by-numbers style. Use realistic proportions and anatomically accurate features, but break complex shading down into clear, distinct geometric boundary lines.",
-  pixel: "Aesthetic: 8-bit/16-bit retro pixel art template. The entire composition must be composed of clean, blocky, square-grid pixel edges and stepped staircase lines.",
-  anime: "Aesthetic: Modern Japanese animation cel-art. Use crisp, sharp contours, highly expressive large eyes, clean geometric hair clumps, and dynamic but simple shapes.",
-  watercolor: "Aesthetic: Stained-glass fluid organic art. Use flowing, elegant, curving boundary lines that mimic separate patches of watercolor wash plates."
+    cartoon: "Aesthetic: Classic animation line-art. Use bold, thick, expressive contours, friendly features, and highly simplified, massive flat regions.",
+    realistic: "Aesthetic: Fine-line paint-by-numbers style. Use realistic proportions and anatomically accurate features, but break complex shading down into clear, distinct geometric boundary lines.",
+    pixel: "Aesthetic: 8-bit/16-bit retro pixel art template. The entire composition must be composed of clean, blocky, square-grid pixel edges and stepped staircase lines.",
+    anime: "Aesthetic: Modern Japanese animation cel-art. Use crisp, sharp contours, highly expressive large eyes, clean geometric hair clumps, and dynamic but simple shapes.",
+    watercolor: "Aesthetic: Stained-glass fluid organic art. Use flowing, elegant, curving boundary lines that mimic separate patches of watercolor wash plates."
 };
 
 app.post("/api/generate-ai", express.json({ limit: "5mb" }), async (req: express.Request, res: express.Response) => {
     try {
         const { prompt, style, settings } = req.body;
         if (!prompt) {
-             res.status(400).json({ error: "Missing prompt" });
-             return;
+            res.status(400).json({ error: "Missing prompt" });
+            return;
         }
-        
+
         console.log(`[AI] Generating: ${prompt} (Style: ${style || 'none'})`);
         const apiKey = process.env.NVIDIA_API_KEY;
         if (!apiKey) {
@@ -343,7 +346,9 @@ CRITICAL STYLE CONSTRAINT: You must strictly apply the following structural aest
 ${styleInstruction}
 
 MANDATORY APPEND: You must append this exact string to the very end of your final response:
-"clean bold black outlines, minimalist, pure white background, no shading, strict color-by-number template style."`;
+"clean bold black outlines, minimalist, pure white background, no shading, strict color-by-number template style."
+
+CRITICAL LIMIT: Your entire response must be UNDER 700 characters. Keep descriptions concise and focused.`;
 
         console.log("[AI] Expanding prompt via LLM...");
         const llmResponse = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
@@ -369,7 +374,13 @@ MANDATORY APPEND: You must append this exact string to the very end of your fina
         }
 
         const llmData = await llmResponse.json();
-        const expandedPrompt = llmData.choices[0].message.content;
+        let expandedPrompt = llmData.choices[0].message.content;
+        
+        if (expandedPrompt.length > 800) {
+            const suffix = " clean bold black outlines, minimalist, pure white background, no shading, strict color-by-number template style.";
+            expandedPrompt = expandedPrompt.substring(0, 800 - suffix.length) + suffix;
+        }
+        
         console.log(`[AI] Expanded Prompt: ${expandedPrompt}`);
 
         // 2. Flux Image Generation
@@ -399,7 +410,7 @@ MANDATORY APPEND: You must append this exact string to the very end of your fina
         const buffer = Buffer.from(b64, "base64");
         await handleGenerateCore(buffer, { settings, ...req.body }, res);
 
-    } catch(err: any) {
+    } catch (err: any) {
         console.error("[AI Error]", err);
         res.status(500).json({ error: err?.message || "AI generation failed" });
     }
