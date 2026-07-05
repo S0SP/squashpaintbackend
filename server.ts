@@ -357,12 +357,15 @@ MANDATORY APPEND: You must append this exact string to the very end of your fina
 CRITICAL LIMIT: Your entire response must be UNDER 700 characters. Keep descriptions concise and focused.`;
 
         console.log("[AI] Expanding prompt via LLM...");
+        const llmController = new AbortController();
+        const llmTimeoutId = setTimeout(() => llmController.abort(), 5000); // 5s timeout
         const llmResponse = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
                 "Authorization": `Bearer ${apiKey}`
             },
+            signal: llmController.signal,
             body: JSON.stringify({
                 model: "meta/llama-3.3-70b-instruct",
                 messages: [
@@ -373,6 +376,7 @@ CRITICAL LIMIT: Your entire response must be UNDER 700 characters. Keep descript
                 max_tokens: 180
             })
         });
+        clearTimeout(llmTimeoutId);
 
         if (!llmResponse.ok) {
             const errText = await llmResponse.text();
@@ -391,6 +395,8 @@ CRITICAL LIMIT: Your entire response must be UNDER 700 characters. Keep descript
 
         // 2. Flux Image Generation
         console.log("[AI] Generating image via FLUX...");
+        const fluxController = new AbortController();
+        const fluxTimeoutId = setTimeout(() => fluxController.abort(), 20000); // 20s timeout
         const nvidiaRes = await fetch('https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b', {
             method: 'POST',
             headers: {
@@ -398,10 +404,12 @@ CRITICAL LIMIT: Your entire response must be UNDER 700 characters. Keep descript
                 'Content-Type': 'application/json',
                 'Accept': 'application/json'
             },
+            signal: fluxController.signal,
             body: JSON.stringify({
                 prompt: expandedPrompt,
             })
         });
+        clearTimeout(fluxTimeoutId);
 
         if (!nvidiaRes.ok) {
             const errText = await nvidiaRes.text();
