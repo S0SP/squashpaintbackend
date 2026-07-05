@@ -358,58 +358,23 @@ MANDATORY APPEND: You must append this exact string to the very end of your fina
 CRITICAL LIMIT: Your entire response must be UNDER 700 characters. Keep descriptions concise and focused.`;
 
         let expandedPrompt = prompt;
-        try {
-            console.log("[AI] Expanding prompt via LLM...");
-            const llmController = new AbortController();
-            const llmTimeoutId = setTimeout(() => llmController.abort(), 5000); // 5s timeout
-            const llmResponse = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${apiKey}`
-                },
-                signal: llmController.signal,
-                body: JSON.stringify({
-                    model: "meta/llama-3.3-70b-instruct",
-                    messages: [
-                        { role: "system", content: baseSystemPrompt },
-                        { role: "user", content: prompt }
-                    ],
-                    temperature: 0.1,
-                    max_tokens: 180
-                })
-            });
-            clearTimeout(llmTimeoutId);
-
-            if (!llmResponse.ok) {
-                const errText = await llmResponse.text();
-                throw new Error(`NVIDIA LLM API Error: ${llmResponse.status} ${errText}`);
-            }
-
-            const llmData = await llmResponse.json();
-            if (!llmData.choices || !llmData.choices[0] || !llmData.choices[0].message) {
-                throw new Error("Invalid LLM response payload");
-            }
-            expandedPrompt = llmData.choices[0].message.content;
-            
-            if (expandedPrompt.length > 800) {
-                expandedPrompt = expandedPrompt.substring(0, 800 - fallbackSuffix.length - 1) + " " + fallbackSuffix;
-            }
-        } catch (llmErr: any) {
-            console.warn(`[AI] LLM Expansion failed, falling back to direct approach. Error: ${llmErr.message}`);
-            // Direct fallback
-            expandedPrompt = `${prompt}. ${styleInstruction} ${fallbackSuffix}`;
-            if (expandedPrompt.length > 800) {
-                expandedPrompt = expandedPrompt.substring(0, 800 - fallbackSuffix.length - 1) + " " + fallbackSuffix;
-            }
+        
+        // DISABLED LLM EXPANSION to avoid hanging (Requested by user)
+        console.log(`[AI] Bypassing LLM expansion and using direct prompt approach...`);
+        expandedPrompt = `${prompt}. ${styleInstruction} ${fallbackSuffix}`;
+        if (expandedPrompt.length > 800) {
+            expandedPrompt = expandedPrompt.substring(0, 800 - fallbackSuffix.length - 1) + " " + fallbackSuffix;
         }
         
         console.log(`[AI] Expanded Prompt: ${expandedPrompt}`);
 
         // 2. Flux Image Generation
-        console.log("[AI] Generating image via FLUX...");
+        console.log("[AI] Sending request to FLUX API for image generation...");
+        console.log(`[AI] FLUX API Timeout set to 20 seconds.`);
         const fluxController = new AbortController();
         const fluxTimeoutId = setTimeout(() => fluxController.abort(), 20000); // 20s timeout
+        
+        const fluxStart = Date.now();
         const nvidiaRes = await fetch('https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b', {
             method: 'POST',
             headers: {
@@ -424,14 +389,22 @@ CRITICAL LIMIT: Your entire response must be UNDER 700 characters. Keep descript
         });
         clearTimeout(fluxTimeoutId);
 
+        console.log(`[AI] FLUX API responded with status: ${nvidiaRes.status} (took ${Date.now() - fluxStart}ms)`);
+
         if (!nvidiaRes.ok) {
             const errText = await nvidiaRes.text();
+            console.error(`[AI] FLUX API Error details: ${errText}`);
             throw new Error(`NVIDIA FLUX API Error: ${nvidiaRes.status} ${errText}`);
         }
 
+        console.log("[AI] Parsing FLUX API JSON response...");
         const data = await nvidiaRes.json();
         const b64 = data.artifacts?.[0]?.base64;
-        if (!b64) throw new Error("No image data returned from NVIDIA API");
+        if (!b64) {
+            console.error(`[AI] No base64 artifact found in FLUX response: ${JSON.stringify(data).substring(0, 200)}`);
+            throw new Error("No image data returned from NVIDIA API");
+        }
+        console.log(`[AI] Successfully extracted base64 image from FLUX response (${b64.length} chars).`);
 
         console.log("[AI] Starting existing image-to-color-by-number algorithm...");
         const buffer = Buffer.from(b64, "base64");
