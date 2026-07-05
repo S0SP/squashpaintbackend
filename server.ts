@@ -341,6 +341,7 @@ app.post("/api/generate-ai", express.json({ limit: "5mb" }), async (req: express
 
         // 1. LLM Expansion
         const styleInstruction = style && STYLE_MODIFIERS[style] ? STYLE_MODIFIERS[style] : STYLE_MODIFIERS['cartoon'];
+        const fallbackSuffix = "vivid and natural colors, massive flat color regions, clean bold black outlines separating every color, minimalist background, no shading, strict 2D vector style.";
         const baseSystemPrompt = `You are the master prompt engineer for a premium children's color-by-number application. Your sole purpose is to take short, simple ideas from children and expand them into highly descriptive visual prompts tailored specifically for a text-to-image generation model.
         
 You must strictly obey the following foundational layout rules:
@@ -352,43 +353,55 @@ CRITICAL STYLE CONSTRAINT: You must strictly apply the following structural aest
 ${styleInstruction}
 
 MANDATORY APPEND: You must append this exact string to the very end of your final response:
-"clean bold black outlines, minimalist, pure white background, no shading, strict color-by-number template style."
+"${fallbackSuffix}"
 
 CRITICAL LIMIT: Your entire response must be UNDER 700 characters. Keep descriptions concise and focused.`;
 
-        console.log("[AI] Expanding prompt via LLM...");
-        const llmController = new AbortController();
-        const llmTimeoutId = setTimeout(() => llmController.abort(), 5000); // 5s timeout
-        const llmResponse = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${apiKey}`
-            },
-            signal: llmController.signal,
-            body: JSON.stringify({
-                model: "meta/llama-3.3-70b-instruct",
-                messages: [
-                    { role: "system", content: baseSystemPrompt },
-                    { role: "user", content: prompt }
-                ],
-                temperature: 0.1,
-                max_tokens: 180
-            })
-        });
-        clearTimeout(llmTimeoutId);
+        let expandedPrompt = prompt;
+        try {
+            console.log("[AI] Expanding prompt via LLM...");
+            const llmController = new AbortController();
+            const llmTimeoutId = setTimeout(() => llmController.abort(), 5000); // 5s timeout
+            const llmResponse = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${apiKey}`
+                },
+                signal: llmController.signal,
+                body: JSON.stringify({
+                    model: "meta/llama-3.3-70b-instruct",
+                    messages: [
+                        { role: "system", content: baseSystemPrompt },
+                        { role: "user", content: prompt }
+                    ],
+                    temperature: 0.1,
+                    max_tokens: 180
+                })
+            });
+            clearTimeout(llmTimeoutId);
 
-        if (!llmResponse.ok) {
-            const errText = await llmResponse.text();
-            throw new Error(`NVIDIA LLM API Error: ${llmResponse.status} ${errText}`);
-        }
+            if (!llmResponse.ok) {
+                const errText = await llmResponse.text();
+                throw new Error(`NVIDIA LLM API Error: ${llmResponse.status} ${errText}`);
+            }
 
-        const llmData = await llmResponse.json();
-        let expandedPrompt = llmData.choices[0].message.content;
-        
-        if (expandedPrompt.length > 800) {
-            const suffix = " clean bold black outlines, minimalist, pure white background, no shading, strict color-by-number template style.";
-            expandedPrompt = expandedPrompt.substring(0, 800 - suffix.length) + suffix;
+            const llmData = await llmResponse.json();
+            if (!llmData.choices || !llmData.choices[0] || !llmData.choices[0].message) {
+                throw new Error("Invalid LLM response payload");
+            }
+            expandedPrompt = llmData.choices[0].message.content;
+            
+            if (expandedPrompt.length > 800) {
+                expandedPrompt = expandedPrompt.substring(0, 800 - fallbackSuffix.length - 1) + " " + fallbackSuffix;
+            }
+        } catch (llmErr: any) {
+            console.warn(`[AI] LLM Expansion failed, falling back to direct approach. Error: ${llmErr.message}`);
+            // Direct fallback
+            expandedPrompt = `${prompt}. ${styleInstruction} ${fallbackSuffix}`;
+            if (expandedPrompt.length > 800) {
+                expandedPrompt = expandedPrompt.substring(0, 800 - fallbackSuffix.length - 1) + " " + fallbackSuffix;
+            }
         }
         
         console.log(`[AI] Expanded Prompt: ${expandedPrompt}`);
